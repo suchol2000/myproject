@@ -1,6 +1,7 @@
 # main.py
 # ------------------------------------------------------------
 # 전국 시군구별 14~19세 인구 비율 단계구분도
+# + 비율 상위 10개 / 하위 10개 강조 지도
 # Streamlit Cloud 배포용 앱
 # ------------------------------------------------------------
 # 필요한 외부 라이브러리:
@@ -56,7 +57,8 @@ BIN_LABELS = [
     "8% 이상"
 ]
 
-# 낮은 비율은 옅게, 높은 비율은 진하게 보이도록 색을 정했습니다.
+# 5단계 단계구분도 색상입니다.
+# 낮은 비율은 옅게, 높은 비율은 진하게 보이도록 정했습니다.
 COLOR_MAP = {
     "1% 미만": "#fff5f0",
     "1% 이상 3% 미만": "#fcbba1",
@@ -64,6 +66,15 @@ COLOR_MAP = {
     "5% 이상 8% 미만": "#fb6a4a",
     "8% 이상": "#cb181d",
     "자료 없음": "#dddddd"
+}
+
+# 상위 10개 / 하위 10개 강조 지도 색상입니다.
+# 상위 10개는 빨강, 하위 10개는 파랑, 나머지는 연한 회색입니다.
+RANK_COLOR_MAP = {
+    "상위 10개": "#e31a1c",
+    "하위 10개": "#1f78b4",
+    "그 외": "#eeeeee",
+    "자료 없음": "#cccccc"
 }
 
 
@@ -290,6 +301,46 @@ def make_map_dataframe():
     # 자료가 없는 지역이 있을 경우 범례에 '자료 없음'으로 표시합니다.
     map_df["비율 구간"] = map_df["비율 구간"].astype("object").fillna("자료 없음")
 
+    # --------------------------------------------------------
+    # 상위 10개 / 하위 10개 지역을 찾고 표시용 열을 만듭니다.
+    # --------------------------------------------------------
+
+    valid_df = map_df.dropna(subset=["14~19세 인구 비율"]).copy()
+
+    top10 = (
+        valid_df
+        .sort_values("14~19세 인구 비율", ascending=False)
+        .head(10)
+        .copy()
+    )
+
+    bottom10 = (
+        valid_df
+        .sort_values("14~19세 인구 비율", ascending=True)
+        .head(10)
+        .copy()
+    )
+
+    top10_codes = top10["코드"].tolist()
+    bottom10_codes = bottom10["코드"].tolist()
+
+    # 기본값은 '그 외'입니다.
+    map_df["상하위 표시"] = "그 외"
+    map_df["상하위 순위"] = ""
+
+    # 자료가 없는 지역은 따로 표시합니다.
+    map_df.loc[map_df["14~19세 인구 비율"].isna(), "상하위 표시"] = "자료 없음"
+
+    # 상위 10개는 빨간색으로 표시할 것입니다.
+    for rank, code in enumerate(top10_codes, start=1):
+        map_df.loc[map_df["코드"] == code, "상하위 표시"] = "상위 10개"
+        map_df.loc[map_df["코드"] == code, "상하위 순위"] = f"상위 {rank}위"
+
+    # 하위 10개는 파란색으로 표시할 것입니다.
+    for rank, code in enumerate(bottom10_codes, start=1):
+        map_df.loc[map_df["코드"] == code, "상하위 표시"] = "하위 10개"
+        map_df.loc[map_df["코드"] == code, "상하위 순위"] = f"하위 {rank}위"
+
     return latest_year, geojson, map_df
 
 
@@ -327,7 +378,155 @@ def make_rank_table(source_df, ascending=False):
 
 
 # ------------------------------------------------------------
-# 10. 제목 표시
+# 10. 5단계 단계구분도 만드는 함수
+# ------------------------------------------------------------
+
+def make_5step_map(map_df, geojson):
+    """
+    1% · 3% · 5% · 8% 기준의 5단계 단계구분도를 만듭니다.
+    """
+
+    legend_order = BIN_LABELS + ["자료 없음"]
+
+    fig = px.choropleth(
+        map_df,
+        geojson=geojson,
+        locations="코드",
+        featureidkey="properties.코드",
+        color="비율 구간",
+        color_discrete_map=COLOR_MAP,
+        category_orders={"비율 구간": legend_order},
+        custom_data=[
+            "시도",
+            "시군구",
+            "14~19세 인구 비율",
+            "14~19세 인구",
+            "전체 인구",
+            "비율 구간"
+        ]
+    )
+
+    fig.update_traces(
+        marker_line_color="#555555",
+        marker_line_width=0.45,
+        hovertemplate=(
+            "<b>%{customdata[1]}</b><br>"
+            "시도: %{customdata[0]}<br>"
+            "14~19세 인구 비율: %{customdata[2]:.2f}%<br>"
+            "14~19세 인구: %{customdata[3]:,}명<br>"
+            "전체 인구: %{customdata[4]:,}명<br>"
+            "비율 구간: %{customdata[5]}"
+            "<extra></extra>"
+        )
+    )
+
+    # 배경 지도 타일 없이 GeoJSON 경계만 보이게 합니다.
+    fig.update_geos(
+        fitbounds="locations",
+        visible=False
+    )
+
+    fig.update_layout(
+        height=760,
+        margin=dict(l=0, r=0, t=20, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend_title_text="비율 구간",
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="left",
+            x=0.01,
+            bgcolor="rgba(255,255,255,0.88)",
+            bordercolor="#eeeeee",
+            borderwidth=1
+        )
+    )
+
+    return fig
+
+
+# ------------------------------------------------------------
+# 11. 상위 10개 / 하위 10개 강조 지도 만드는 함수
+# ------------------------------------------------------------
+
+def make_rank_highlight_map(map_df, geojson):
+    """
+    비율 상위 10개와 하위 10개 지역을 지도에 색으로 표현합니다.
+
+    - 상위 10개: 빨간색
+    - 하위 10개: 파란색
+    - 그 외: 연한 회색
+    """
+
+    rank_order = ["상위 10개", "하위 10개", "그 외", "자료 없음"]
+
+    fig = px.choropleth(
+        map_df,
+        geojson=geojson,
+        locations="코드",
+        featureidkey="properties.코드",
+        color="상하위 표시",
+        color_discrete_map=RANK_COLOR_MAP,
+        category_orders={"상하위 표시": rank_order},
+        custom_data=[
+            "시도",
+            "시군구",
+            "14~19세 인구 비율",
+            "14~19세 인구",
+            "전체 인구",
+            "상하위 표시",
+            "상하위 순위",
+            "비율 구간"
+        ]
+    )
+
+    fig.update_traces(
+        marker_line_color="#555555",
+        marker_line_width=0.45,
+        hovertemplate=(
+            "<b>%{customdata[1]}</b><br>"
+            "시도: %{customdata[0]}<br>"
+            "14~19세 인구 비율: %{customdata[2]:.2f}%<br>"
+            "14~19세 인구: %{customdata[3]:,}명<br>"
+            "전체 인구: %{customdata[4]:,}명<br>"
+            "상하위 표시: %{customdata[5]}<br>"
+            "상하위 순위: %{customdata[6]}<br>"
+            "비율 구간: %{customdata[7]}"
+            "<extra></extra>"
+        )
+    )
+
+    # 배경 지도 타일 없이 GeoJSON 경계만 보이게 합니다.
+    fig.update_geos(
+        fitbounds="locations",
+        visible=False
+    )
+
+    fig.update_layout(
+        height=760,
+        margin=dict(l=0, r=0, t=20, b=0),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        legend_title_text="상위/하위 표시",
+        legend=dict(
+            orientation="v",
+            yanchor="top",
+            y=0.98,
+            xanchor="left",
+            x=0.01,
+            bgcolor="rgba(255,255,255,0.88)",
+            bordercolor="#eeeeee",
+            borderwidth=1
+        )
+    )
+
+    return fig
+
+
+# ------------------------------------------------------------
+# 12. 제목 표시
 # ------------------------------------------------------------
 
 st.markdown(
@@ -345,7 +544,7 @@ st.markdown(
 
 
 # ------------------------------------------------------------
-# 11. 데이터 준비
+# 13. 데이터 준비
 # ------------------------------------------------------------
 
 try:
@@ -359,7 +558,7 @@ except Exception as e:
 
 
 # ------------------------------------------------------------
-# 12. 요약 지표 표시
+# 14. 요약 지표 표시
 # ------------------------------------------------------------
 
 valid_df = map_df.dropna(subset=["14~19세 인구 비율"]).copy()
@@ -386,8 +585,9 @@ with col4:
 st.markdown(
     """
     <div class="note-box">
-        색 구간은 <b>1% · 3% · 5% · 8%</b>를 기준으로 나누었습니다.
-        낮은 비율은 옅은색, 높은 비율은 진한색입니다.
+        첫 번째 탭은 <b>1% · 3% · 5% · 8%</b> 기준의 5단계 단계구분도입니다.<br>
+        두 번째 탭은 비율 <b style="color:#e31a1c;">상위 10개 지역</b>과
+        <b style="color:#1f78b4;">하위 10개 지역</b>을 지도에 따로 색칠한 지도입니다.
     </div>
     """,
     unsafe_allow_html=True
@@ -395,81 +595,56 @@ st.markdown(
 
 
 # ------------------------------------------------------------
-# 13. 단계구분도 그리기
+# 15. 지도 표시
 # ------------------------------------------------------------
 
-legend_order = BIN_LABELS + ["자료 없음"]
+tab1, tab2 = st.tabs([
+    "🌈 5단계 단계구분도",
+    "🔥 상위 10개 · 하위 10개 강조 지도"
+])
 
-fig = px.choropleth(
-    map_df,
-    geojson=geojson,
-    locations="코드",
-    featureidkey="properties.코드",
-    color="비율 구간",
-    color_discrete_map=COLOR_MAP,
-    category_orders={"비율 구간": legend_order},
-    custom_data=[
-        "시도",
-        "시군구",
-        "14~19세 인구 비율",
-        "14~19세 인구",
-        "전체 인구",
-        "비율 구간"
-    ]
-)
+with tab1:
+    st.markdown("### 🌈 시군구별 14~19세 인구 비율 5단계 지도")
 
-# 마우스를 올렸을 때 보이는 정보입니다.
-# 요청 문구의 '고령화율'은 여기에서 실제 계산값인 '14~19세 인구 비율'로 표시했습니다.
-fig.update_traces(
-    marker_line_color="#555555",
-    marker_line_width=0.45,
-    hovertemplate=(
-        "<b>%{customdata[1]}</b><br>"
-        "시도: %{customdata[0]}<br>"
-        "14~19세 인구 비율: %{customdata[2]:.2f}%<br>"
-        "14~19세 인구: %{customdata[3]:,}명<br>"
-        "전체 인구: %{customdata[4]:,}명<br>"
-        "비율 구간: %{customdata[5]}"
-        "<extra></extra>"
+    fig_5step = make_5step_map(map_df, geojson)
+
+    st.plotly_chart(
+        fig_5step,
+        use_container_width=True,
+        config={
+            "displayModeBar": False,
+            "scrollZoom": False
+        }
     )
-)
 
-# 배경 지도 타일 없이 GeoJSON 경계만 보이게 합니다.
-fig.update_geos(
-    fitbounds="locations",
-    visible=False
-)
+with tab2:
+    st.markdown("### 🔥 비율 상위 10개 · 하위 10개 강조 지도")
 
-fig.update_layout(
-    height=760,
-    margin=dict(l=0, r=0, t=20, b=0),
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    legend_title_text="비율 구간",
-    legend=dict(
-        orientation="v",
-        yanchor="top",
-        y=0.98,
-        xanchor="left",
-        x=0.01,
-        bgcolor="rgba(255,255,255,0.88)",
-        bordercolor="#eeeeee",
-        borderwidth=1
+    st.markdown(
+        """
+        <div class="note-box">
+            <b style="color:#e31a1c;">빨간색</b>은 14~19세 인구 비율이 높은 상위 10개 지역입니다.<br>
+            <b style="color:#1f78b4;">파란색</b>은 14~19세 인구 비율이 낮은 하위 10개 지역입니다.<br>
+            연한 회색은 그 외 지역입니다.
+        </div>
+        """,
+        unsafe_allow_html=True
     )
-)
 
-st.plotly_chart(
-    fig,
-    use_container_width=True,
-    config={
-        "displayModeBar": False,
-        "scrollZoom": False
-    }
-)
+    fig_rank = make_rank_highlight_map(map_df, geojson)
+
+    st.plotly_chart(
+        fig_rank,
+        use_container_width=True,
+        config={
+            "displayModeBar": False,
+            "scrollZoom": False
+        }
+    )
 
 
 # ------------------------------------------------------------
-# 14. 지도 아래 순위표 표시
+# 16. 지도 아래 순위표 표시
 # ------------------------------------------------------------
 
 st.markdown("## 📊 시군구별 14~19세 인구 비율 순위")
@@ -525,7 +700,7 @@ with right_col:
 
 
 # ------------------------------------------------------------
-# 15. 하단 안내
+# 17. 하단 안내
 # ------------------------------------------------------------
 
 st.markdown("---")
